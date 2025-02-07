@@ -1,0 +1,8 @@
+*.log*
+results
+work
+test_data
+.ipynb_checkpoints
+.fileid.db
+.nextflow*
+.DS_Store
