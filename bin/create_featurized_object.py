@@ -80,7 +80,7 @@ def load_data(library_path, genome_path, genome):
                         on=['feature_start','feature_end','feature_name'])
     
     # Get just the unique inserts in a separate dataframe without the features
-    inserts_only = mapped_inserts[['ID','insert_start','insert_end','mapping_quality']].drop_duplicates().set_index('ID')
+    inserts_only = mapped_inserts[['ID','insert_start','insert_end','insert_sense','mapping_quality']].drop_duplicates().set_index('ID')
     
     return barcodes, mapped_inserts, inserts_only
 
@@ -103,7 +103,7 @@ def create_features_and_metadata(merge, barcodes, mapped_inserts):
     Create features and metadata dataframes for barcodes and features
     '''
     # Create the barcodes metadata dataframe and average by barcode
-    bc_meta = merge[['sequence','length','insert_start','insert_end']]
+    bc_meta = merge[['sequence','length','insert_start','insert_end','insert_sense']]
     bc_meta = bc_meta.rename(columns={'sequence':'bc_sequence',
                                     'length':'bc_length'})
     bc_meta_avg = bc_meta.groupby('bc_sequence').agg(lambda x: '|'.join(map(str, x)))
