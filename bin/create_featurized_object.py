@@ -7,6 +7,7 @@ import anndata as ad
 from scipy.sparse import csr_matrix
 
 MAPQ_CUTOFF = 60 # cutoff for mapping quality score
+GENOME_PATH = 's3://pioneer-data/genomes/' # path to genomes
 
 def load_bedtools_intersection(file):
     '''
@@ -58,7 +59,7 @@ def sparse_pivot_table(frame, row_label, col_label, val_label):
 
     return pd.DataFrame.sparse.from_spmatrix(sparse_matrix, index=row_cats.categories, columns=col_cats.categories)
 
-def load_data(library_path, genome_path, genome):
+def load_data(library_path, genome):
     '''
     Load data from long read library qc output and annotated genome
     '''
@@ -70,7 +71,7 @@ def load_data(library_path, genome_path, genome):
                                                     'insert_intersect.out'))
     
     # Load gff file
-    gff = load_gff_file(join(genome_path, genome, genome + '_genes.gff'))
+    gff = load_gff_file(join(GENOME_PATH, genome, genome + '_genes.gff'))
     gff['gene_id'] = [x.split('ID=')[1].split('gene-')[1].split(';')[0] for x in gff['info']]
     gff['feature_name'] = [x.split('Name=')[1].split(';')[0] for x in gff['info']]
 
