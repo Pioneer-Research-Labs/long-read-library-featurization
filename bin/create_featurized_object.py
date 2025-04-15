@@ -15,13 +15,13 @@ def load_bedtools_intersection(file):
     return pd.read_csv(file, 
                         sep='\t', 
                         header=None, 
-                        names=['genome_insert',
+                        names=['insert_chr',
                                'insert_start',
                                'insert_end',
                                'ID',
                                'mapping_quality',
                                'insert_sense',
-                               'genome_feature',
+                               'feature_chr',
                                'feature_start',
                                'feature_end',
                                'feature_name',
@@ -80,7 +80,7 @@ def load_data(library_path, genome_path, genome):
                         on=['feature_start','feature_end','feature_name'])
     
     # Get just the unique inserts in a separate dataframe without the features
-    inserts_only = mapped_inserts[['ID','insert_start','insert_end','insert_sense','mapping_quality']].drop_duplicates().set_index('ID')
+    inserts_only = mapped_inserts[['ID','insert_chr','insert_start','insert_end','insert_sense','mapping_quality']].drop_duplicates().set_index('ID')
     
     return barcodes, mapped_inserts, inserts_only
 
@@ -96,6 +96,9 @@ def merge_and_qc_data(barcodes, inserts_only):
     # Filter out reads with poor mapping quality
     merge = merge[merge.mapping_quality >= MAPQ_CUTOFF]
 
+    # Calculate mapped insert length
+    merge['insert_length'] = merge['insert_end'] - merge['insert_start']
+
     return merge
 
 def create_features_and_metadata(merge, barcodes, mapped_inserts):
@@ -103,7 +106,8 @@ def create_features_and_metadata(merge, barcodes, mapped_inserts):
     Create features and metadata dataframes for barcodes and features
     '''
     # Create the barcodes metadata dataframe and average by barcode
-    bc_meta = merge[['sequence','length','insert_start','insert_end','insert_sense']]
+    bc_meta = merge[
+        ['sequence','length','insert_chr','insert_start','insert_end','insert_length','insert_sense']]
     bc_meta = bc_meta.rename(columns={'sequence':'bc_sequence',
                                     'length':'bc_length'})
     bc_meta_avg = bc_meta.groupby('bc_sequence').agg(lambda x: '|'.join(map(str, x)))
