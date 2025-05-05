@@ -1,5 +1,6 @@
 import argparse
 from create_featurized_object import (load_data, 
+    calculate_raw_read_lengths,
     merge_and_qc_data, 
     create_features_and_metadata,
     create_anndata_object,
@@ -21,14 +22,17 @@ if __name__ == "__main__":
 
     print('Data loaded.')
 
+    # Calculate raw read lengths
+    raw_read_lengths = calculate_raw_read_lengths(library_path)
+    
     # Merge and QC data
-    merge = merge_and_qc_data(barcodes, inserts_only)
+    merge, empty_reads = merge_and_qc_data(barcodes, inserts_only, raw_read_lengths)
 
     # Create features and metadata
     features_full, features_partial, bc_meta_avg, features_meta, empty_barcodes = create_features_and_metadata(
         merge,
-        barcodes,
-        mapped_inserts)
+        mapped_inserts,
+        empty_reads)
 
     # Create AnnData object
     obj = create_anndata_object(features_full, features_partial, bc_meta_avg, features_meta, empty_barcodes)

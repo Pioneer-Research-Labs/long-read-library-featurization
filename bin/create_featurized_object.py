@@ -1,13 +1,56 @@
 ### Create a featurized AnnData object from outputs of long read qc pipeline
 
+import pysam
 import pandas as pd
 import numpy as np
 from os.path import join
 import anndata as ad
+from tqdm import tqdm
 from scipy.sparse import csr_matrix
 
 MAPQ_CUTOFF = 60 # cutoff for mapping quality score
 GENOME_PATH = 's3://pioneer-data/genomes/' # path to genomes
+
+def fastq_to_df(fastq_path):
+    """
+    Reads a FASTQ file using pysam and returns a DataFrame
+    with read IDs and sequence lengths. Displays a progress bar.
+
+    Parameters:
+    - fastq_path (str): Path to the FASTQ file (can be gzipped).
+
+    Returns:
+    - pandas.DataFrame: A DataFrame with columns 'read_id' and 'length'.
+    """
+    read_ids = []
+    lengths = []
+
+    with pysam.FastxFile(fastq_path) as fq:
+        # Using tqdm with unknown total
+        with tqdm(desc="Processing reads", unit="read") as pbar:
+            for entry in fq:
+                read_ids.append(entry.name)
+                lengths.append(len(entry.sequence))
+                pbar.update(1)
+
+    df = pd.DataFrame({
+        'read_id': read_ids,
+        'length': lengths
+    })
+
+    return df.set_index('read_id')
+
+def calculate_raw_read_lengths(library_path):
+    """
+    Calculate the raw read lengths from a FASTQ file.
+
+    Parameters:
+    - fastq_path (str): Path to the FASTQ file (can be gzipped).
+
+    Returns:
+    - pandas.DataFrame: A DataFrame with columns 'read_id' and 'length'.
+    """
+    return fastq_to_df(join(library_path, 'fastplong.fq'))
 
 def load_bedtools_intersection(file):
     '''
@@ -85,7 +128,7 @@ def load_data(library_path, genome):
     
     return barcodes, mapped_inserts, inserts_only
 
-def merge_and_qc_data(barcodes, inserts_only):
+def merge_and_qc_data(barcodes, inserts_only, raw_read_lengths):
     '''
     Merge barcodes and inserts dataframes and perform QC
     '''
@@ -100,21 +143,31 @@ def merge_and_qc_data(barcodes, inserts_only):
     # Calculate mapped insert length
     merge['insert_length'] = merge['insert_end'] - merge['insert_start']
 
-    return merge
+    # Convert barcode length to int
+    merge['length'] = merge['length'].astype(int)
 
-def create_features_and_metadata(merge, barcodes, mapped_inserts):
+    # Add raw read length
+    merge['raw_read_length'] = [raw_read_lengths.loc[x].length for x in merge.index]
+
+    # Also get the reads for empty barcodes with no inserts
+    empty_barcodes = list(set(barcodes.sequence.unique()) - set(merge.sequence.unique()))
+    empty_reads = barcodes[barcodes['sequence'].isin(empty_barcodes)]
+
+    # Add raw read length to empty reads
+    empty_reads['raw_read_length'] = [raw_read_lengths.loc[x].length for x in empty_reads.index]
+
+    return merge, empty_reads
+
+def create_features_and_metadata(merge, mapped_inserts, empty_reads):
     '''
     Create features and metadata dataframes for barcodes and features
     '''
     # Create the barcodes metadata dataframe and average by barcode
     bc_meta = merge[
-        ['sequence','length','insert_chr','insert_start','insert_end','insert_length','insert_sense']]
+        ['sequence','length','insert_chr','insert_start','insert_end','insert_length','insert_sense','raw_read_length']]
     bc_meta = bc_meta.rename(columns={'sequence':'bc_sequence',
                                     'length':'bc_length'})
     bc_meta_avg = bc_meta.groupby('bc_sequence').agg(lambda x: '|'.join(map(str, x)))
-
-    # Also save the empty barcodes with no insert
-    empty_barcodes = list(set(barcodes.sequence.unique()) - set(bc_meta_avg.index))
 
     # Create features metadata dataframe
     meta_cols = ['feature_start',
@@ -144,6 +197,11 @@ def create_features_and_metadata(merge, barcodes, mapped_inserts):
     # Using partial genes
     features_partial = sparse_pivot_table(mapped_inserts_avg, 'bc_sequence', 'gene_id', 'overlap_frac')
 
+    # Save empty barcodes
+    empty_reads = empty_reads.rename(columns={'sequence':'bc_sequence',
+                                'length':'bc_length'})
+    empty_barcodes = empty_reads.groupby('bc_sequence').agg(lambda x: '|'.join(map(str, x)))
+
     return features_full, features_partial, bc_meta_avg, features_meta, empty_barcodes
 
 def create_anndata_object(features_full, features_partial, bc_meta_avg, features_meta, empty_barcodes):
@@ -164,6 +222,6 @@ def export_anndata_object(obj, out_path, filename):
     '''
     Export AnnData object to h5ad file
     '''
-
+    breakpoint()
     # Export
     obj.write_h5ad(join(out_path, filename))
