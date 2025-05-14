@@ -42,9 +42,3 @@ This will generate a file named `library_dataframe.parquet` inside the specified
 * `calculate_raw_read_lengths(path)`: Computes read lengths from raw read files.
 * `merge_and_qc_data(barcodes, inserts, lengths)`: Merges datasets and applies quality control filters.
 * `aggregate_data(df)`: Aggregates features across barcodes.
-
-For questions or issues, please [open an issue](https://github.com/your-username/library-featurization-pipeline/issues).
-
----
-
-Would you like a `requirements.txt` or example dataset description added too?
