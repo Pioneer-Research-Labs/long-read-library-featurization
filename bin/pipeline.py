@@ -90,7 +90,8 @@ if __name__ == "__main__":
 
     # Remove duplicate barcodes
     n_pre_drop = len(aggregated_merge)
-    aggregated_merge.drop_duplicates(subset='bc_sequence', keep=False, inplace=True)
+    idx_to_drop = aggregated_merge[aggregated_merge.empty_insert == False].duplicated(subset='bc_sequence', keep=False)
+    aggregated_merge = aggregated_merge[~idx_to_drop]
     n_post_drop = len(aggregated_merge)
     print(f'Dropped {n_pre_drop - n_post_drop} degenerate barcodes.')
     print(f'Library barcode number after dropping duplicates: {n_post_drop}')
