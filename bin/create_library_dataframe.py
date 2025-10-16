@@ -18,9 +18,13 @@ import pysam
 import pandas as pd
 from os.path import join, exists
 from tqdm.auto import tqdm
+import subprocess
+import os
+import warnings
 
 MIN_BARCODE_LENGTH = 42
 MAX_BARCODE_LENGTH = 46
+MAX_EMPTY_INSERT_LENGTH = 100
 MAPQ_CUTOFF = 60
 
 def fastq_to_df(fastq_path):
@@ -105,7 +109,7 @@ def load_bam_to_dataframe(bam_path, max_reads=None):
 
 def load_data(library_path):
     '''
-    Load data from long read library qc output
+    Load data from long read library qc output (barcodes, mapped inserts, and empty inserts)
     '''
     # Load barcodes
     barcodes = pd.read_csv(join(library_path,
@@ -113,8 +117,16 @@ def load_data(library_path):
     barcodes = barcodes.drop(columns=['blank'])
 
     # Mapped inserts
-    mapped_inserts = load_bam_to_dataframe(join(library_path,
-                                                    'mapped_inserts.bam')).set_index('read_id')
+    # If the bam file is on s3, download to a temporary local file and then load
+    if library_path.startswith('s3://'):
+        print('Input files are on s3. Downloading mapped inserts.bam to temporary local file.')
+        temp_name = join('/tmp/', 'mapped_inserts.bam')
+        subprocess.run(['aws', 's3', 'cp', join(library_path, 'mapped_inserts.bam'), temp_name])
+        mapped_inserts = load_bam_to_dataframe(temp_name).set_index('read_id')
+        os.remove(temp_name)
+        print('Mapped inserts.bam downloaded to temporary local file and loaded.')
+    else:
+        mapped_inserts = load_bam_to_dataframe(join(library_path, 'mapped_inserts.bam')).set_index('read_id')
     
     # Filter out barcodes that have weird lengths
     barcodes = barcodes[barcodes.bc_length.between(MIN_BARCODE_LENGTH, MAX_BARCODE_LENGTH)]
@@ -122,17 +134,23 @@ def load_data(library_path):
     # Drop unmapped inserts or inserts with poor mapping quality
     mapped_inserts = mapped_inserts[mapped_inserts['is_unmapped'] == False].drop(columns=['is_unmapped'])
     mapped_inserts = mapped_inserts[mapped_inserts['mapping_quality'] >= MAPQ_CUTOFF]
-    
-    return barcodes, mapped_inserts
 
-def merge_and_qc_data(barcodes, mapped_inserts, raw_read_lengths):
+    # Empty inserts -- load, drop blank column, keep short inserts only
+    empty_inserts = pd.read_csv(join(library_path,
+        'sites.tsv'), sep='\t', index_col=0, names=['read_id','empty_insert_sequence','blank','empty_insert_length'])
+    empty_inserts = empty_inserts.drop(columns=['blank'])
+    empty_inserts = empty_inserts[empty_inserts.empty_insert_length <= MAX_EMPTY_INSERT_LENGTH]
+    
+    return barcodes, mapped_inserts, empty_inserts
+
+def merge_and_qc_data(barcodes, mapped_inserts, empty_inserts, raw_read_lengths):
     '''
     Merge barcodes and inserts dataframes and perform QC
     '''
 
-    # Merge reads to get data that contains both barcodes and inserts (using barcodes as master)
+    # Merge reads to get data that contains both barcodes and inserts
     merge = pd.merge(
-        barcodes, mapped_inserts, left_index=True, right_index=True, how='left')
+        barcodes, mapped_inserts, left_index=True, right_index=True, how='inner')
     
     # Add raw read lengths
     if raw_read_lengths is not None:
@@ -144,10 +162,18 @@ def merge_and_qc_data(barcodes, mapped_inserts, raw_read_lengths):
     # Calculate mapped insert length
     merge['insert_length'] = [len(x) if type(x) is str else None for x in merge['insert_sequence']]
 
-    # Create column label for empty insert sequences
-    empty_barcode_reads = list(set(merge.index.unique()) - set(mapped_inserts.index.unique()))
+    # Merge barcodes with empty inserts
+    empty_inserts = pd.merge(
+        barcodes, empty_inserts, left_index=True, right_index=True, how='inner')
+    
+    # Remove any empty inserts that have a shared barcode with a real insert
+    empty_inserts = empty_inserts[~empty_inserts.index.isin(merge.index)]
+
+    # Add empty inserts to merged dataframe
     merge['empty_insert'] = False
-    merge.loc[empty_barcode_reads,'empty_insert'] = True
+    empty_inserts['empty_insert'] = True
+
+    merge = pd.concat([merge, empty_inserts])
 
     return merge
 
@@ -178,18 +204,23 @@ def aggregate_data(merge):
             mode_len = mode_lengths.iloc[0]
             modal_subset = group[group['insert_length'] == mode_len]
             # Aggregate modal insert reads
-            return modal_subset.groupby('bc_sequence').agg({
-                'bc_length': 'first',
-                'reference_name': 'first',
-                'reference_start': 'median',
-                'reference_end': 'median',
-                'mapping_quality': 'median',
-                'is_reverse': 'first',
-                'insert_sequence': 'first',
-                'raw_read_length': 'median',
-                'empty_insert': 'first',
-                'insert_length': 'median'
-            }).assign(n_reads = len(modal_subset))
+            # Ignore RunTime warnings about means of empty slices due to nan values
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=RuntimeWarning)
+                return modal_subset.groupby('bc_sequence').agg({
+                    'bc_length': 'first',
+                    'reference_name': 'first',
+                    'reference_start': 'median',
+                    'reference_end': 'median',
+                    'mapping_quality': 'median',
+                    'is_reverse': 'first',
+                    'insert_sequence': 'first',
+                    'raw_read_length': 'median',
+                    'empty_insert': 'first',
+                    'insert_length': 'median',
+                    'empty_insert_sequence': 'first',
+                    'empty_insert_length': 'median'
+                }).assign(n_reads = len(modal_subset))
         else:
             # Degenerate: use the longest insert
             max_len = lengths.max()
@@ -204,7 +235,7 @@ def aggregate_data(merge):
 
     return df_agg
 
-def save_to_fasta(seqs, filename):
+def save_to_fasta(seqs, out_path, filename):
     """
     Save a list of DNA/RNA sequences to a FASTA file.
 
@@ -212,7 +243,18 @@ def save_to_fasta(seqs, filename):
         seqs (list of str): List of sequence strings.
         filename (str): Output FASTA file path.
     """
-    with open(filename, 'w') as f:
+    # If the write path is local, write directly. Otherwise if the write path is on s3, upload to s3
+    # by first writing to a temporary local file and then using aws s3 cp to upload to s3.
+    if out_path.startswith('s3://'):
+        out_name = join('/tmp/', filename)
+    else:
+        out_name = join(out_path, filename)
+    # Write to file
+    with open(out_name, 'w') as f:
         for i, seq in enumerate(seqs, 1):
             f.write(f">seq{i}\n{seq}\n")
-
+    # If on s3, upload to s3 and delete temporary local file
+    if out_path.startswith('s3://'):
+        s3_name = join(out_path, filename)
+        subprocess.run(['aws', 's3', 'cp', out_name, s3_name])
+        os.remove(out_name)
