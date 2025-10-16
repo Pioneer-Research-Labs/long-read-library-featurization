@@ -16,7 +16,7 @@
 
 import pysam
 import pandas as pd
-from os.path import join
+from os.path import join, exists
 from tqdm.auto import tqdm
 
 MIN_BARCODE_LENGTH = 42
@@ -37,20 +37,27 @@ def fastq_to_df(fastq_path):
     read_ids = []
     lengths = []
 
-    with pysam.FastxFile(fastq_path) as fq:
-        # Using tqdm with unknown total
-        with tqdm(desc="Processing reads", unit="read") as pbar:
-            for entry in fq:
-                read_ids.append(entry.name)
-                lengths.append(len(entry.sequence))
-                pbar.update(1)
+    # Check if fastplong output exists
+    if not exists(fastq_path):
+        print('Fastplong output not found. Skipping raw read calculation.')
+        return None
+    else:
+        print('Fastplong output found. Calculating raw read lengths.')
 
-    df = pd.DataFrame({
-        'read_id': read_ids,
-        'raw_read_length': lengths
-    })
+        with pysam.FastxFile(fastq_path) as fq:
+            # Using tqdm with unknown total
+            with tqdm(desc="Processing reads", unit="read") as pbar:
+                for entry in fq:
+                    read_ids.append(entry.name)
+                    lengths.append(len(entry.sequence))
+                    pbar.update(1)
 
-    return df.set_index('read_id')
+        df = pd.DataFrame({
+            'read_id': read_ids,
+            'raw_read_length': lengths
+        })
+
+        return df.set_index('read_id')
 
 def calculate_raw_read_lengths(library_path):
     """
@@ -128,8 +135,11 @@ def merge_and_qc_data(barcodes, mapped_inserts, raw_read_lengths):
         barcodes, mapped_inserts, left_index=True, right_index=True, how='left')
     
     # Add raw read lengths
-    merge = pd.merge(
-        merge, raw_read_lengths, left_index=True, right_index=True, how='left')
+    if raw_read_lengths is not None:
+        merge = pd.merge(
+            merge, raw_read_lengths, left_index=True, right_index=True, how='left')
+    else:
+        merge['raw_read_length'] = None
 
     # Calculate mapped insert length
     merge['insert_length'] = [len(x) if type(x) is str else None for x in merge['insert_sequence']]
@@ -193,4 +203,16 @@ def aggregate_data(merge):
     df_agg = pd.concat([df_agg, resolved_multi])
 
     return df_agg
+
+def save_to_fasta(seqs, filename):
+    """
+    Save a list of DNA/RNA sequences to a FASTA file.
+
+    Parameters:
+        seqs (list of str): List of sequence strings.
+        filename (str): Output FASTA file path.
+    """
+    with open(filename, 'w') as f:
+        for i, seq in enumerate(seqs, 1):
+            f.write(f">seq{i}\n{seq}\n")
 
