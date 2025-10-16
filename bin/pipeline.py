@@ -88,9 +88,9 @@ if __name__ == "__main__":
     aggregated_merge = pd.concat(aggregated_merge)
     print('All samples processed and aggregated.')
 
-    # Remove duplicate barcodes
+    # Remove duplicate barcodes (only if not empty insert)
     n_pre_drop = len(aggregated_merge)
-    idx_to_drop = aggregated_merge[aggregated_merge.empty_insert == False].duplicated(subset='bc_sequence', keep=False)
+    idx_to_drop = (aggregated_merge.duplicated(subset='bc_sequence', keep=False)) & (aggregated_merge.empty_insert == False)
     aggregated_merge = aggregated_merge[~idx_to_drop]
     n_post_drop = len(aggregated_merge)
     print(f'Dropped {n_pre_drop - n_post_drop} degenerate barcodes.')
