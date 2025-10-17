@@ -119,8 +119,10 @@ def load_data(library_path):
     # Mapped inserts
     # If the bam file is on s3, download to a temporary local file and then load
     if library_path.startswith('s3://'):
+        # Extract the last folder in library_path to define as folder_name
+        folder_name = library_path.rstrip('/').split('/')[-1]
         print('Input files are on s3. Downloading mapped inserts.bam to temporary local file.')
-        temp_name = join('/tmp/', 'mapped_inserts.bam')
+        temp_name = join('/tmp/', folder_name, 'mapped_inserts.bam')
         subprocess.run(['aws', 's3', 'cp', join(library_path, 'mapped_inserts.bam'), temp_name])
         mapped_inserts = load_bam_to_dataframe(temp_name).set_index('read_id')
         os.remove(temp_name)
@@ -134,16 +136,18 @@ def load_data(library_path):
     # Drop unmapped inserts or inserts with poor mapping quality
     mapped_inserts = mapped_inserts[mapped_inserts['is_unmapped'] == False].drop(columns=['is_unmapped'])
     mapped_inserts = mapped_inserts[mapped_inserts['mapping_quality'] >= MAPQ_CUTOFF]
+    mapped_inserts['insert_type'] = 'mapped'
 
-    # Empty inserts -- load, drop blank column, keep short inserts only
-    empty_inserts = pd.read_csv(join(library_path,
-        'sites.tsv'), sep='\t', index_col=0, names=['read_id','empty_insert_sequence','blank','empty_insert_length'])
-    empty_inserts = empty_inserts.drop(columns=['blank'])
-    empty_inserts = empty_inserts[empty_inserts.empty_insert_length <= MAX_EMPTY_INSERT_LENGTH]
+    # Unmapped inserts -- load, drop blank column, label as "empty" or "other"
+    unmapped_inserts = pd.read_csv(join(library_path,
+        'sites.tsv'), sep='\t', index_col=0, names=['read_id','unmapped_insert_sequence','blank','unmapped_insert_length'])
+    unmapped_inserts = unmapped_inserts.drop(columns=['blank'])
+    unmapped_inserts.loc[unmapped_inserts.unmapped_insert_length > MAX_EMPTY_INSERT_LENGTH, 'insert_type'] = 'unmapped'
+    unmapped_inserts.loc[unmapped_inserts.unmapped_insert_length <= MAX_EMPTY_INSERT_LENGTH, 'insert_type'] = 'empty'
     
-    return barcodes, mapped_inserts, empty_inserts
+    return barcodes, mapped_inserts, unmapped_inserts
 
-def merge_and_qc_data(barcodes, mapped_inserts, empty_inserts, raw_read_lengths):
+def merge_and_qc_data(barcodes, mapped_inserts, unmapped_inserts, raw_read_lengths):
     '''
     Merge barcodes and inserts dataframes and perform QC
     '''
@@ -162,18 +166,15 @@ def merge_and_qc_data(barcodes, mapped_inserts, empty_inserts, raw_read_lengths)
     # Calculate mapped insert length
     merge['insert_length'] = [len(x) if type(x) is str else None for x in merge['insert_sequence']]
 
-    # Merge barcodes with empty inserts
-    empty_inserts = pd.merge(
-        barcodes, empty_inserts, left_index=True, right_index=True, how='inner')
+    # Merge barcodes with unmapped inserts
+    unmapped_inserts = pd.merge(
+        barcodes, unmapped_inserts, left_index=True, right_index=True, how='inner')
     
-    # Remove any empty inserts that have a shared barcode with a real insert
-    empty_inserts = empty_inserts[~empty_inserts.index.isin(merge.index)]
+    # Remove any unmapped inserts that have a shared barcode with a mapped insert
+    unmapped_inserts = unmapped_inserts[~unmapped_inserts.index.isin(merge.index)]
 
-    # Add empty inserts to merged dataframe
-    merge['empty_insert'] = False
-    empty_inserts['empty_insert'] = True
-
-    merge = pd.concat([merge, empty_inserts])
+    # Add unmapped inserts to merged dataframe
+    merge = pd.concat([merge, unmapped_inserts])
 
     return merge
 
@@ -216,10 +217,10 @@ def aggregate_data(merge):
                     'is_reverse': 'first',
                     'insert_sequence': 'first',
                     'raw_read_length': 'median',
-                    'empty_insert': 'first',
+                    'insert_type': 'first',
                     'insert_length': 'median',
-                    'empty_insert_sequence': 'first',
-                    'empty_insert_length': 'median'
+                    'unmapped_insert_sequence': 'first',
+                    'unmapped_insert_length': 'median'
                 }).assign(n_reads = len(modal_subset))
         else:
             # Degenerate: use the longest insert
