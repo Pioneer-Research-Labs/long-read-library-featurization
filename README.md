@@ -33,6 +33,8 @@ python pipeline.py --library_path /path/to/your/library
 
 This will generate a file named `library_dataframe.parquet` inside the specified `--library_path`.
 
+If you want to error correct the library dataframe to a ground truth barcode reference, you can run the `error_correct_library.py` script after running the main pipeline.
+
 ---
 
 ## 📤 Output
